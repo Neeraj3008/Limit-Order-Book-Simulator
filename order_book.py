@@ -45,22 +45,26 @@ class Orderbook:
                 continue
 
             if sell_order.quantity == 0:
-                self.asks[best_bid].pop(0)
+                self.asks[best_ask].pop(0)
                 continue
 
 
             traded_quantity = min(buy_order.quantity , sell_order.quantity)
 
             buy_order.quantity = buy_order.quantity - traded_quantity
-            sell_order.quantity = sell_order.quantity - traded_quantity   
+            sell_order.quantity = sell_order.quantity - traded_quantity
+
+            
+   
 
             print("trade | price = " , best_ask , "quantity = " , traded_quantity )
-            imb = self.get_order_book_imbalance()
-            print("IMBALANCE -" , round(imb , 3))
-            
-            if imb is None:
-                self.strategy(imb)
-            
+            # Update trader if involved
+            self.trader.on_trade(
+                buy_order=buy_order,
+                sell_order=sell_order,
+                price=best_ask,
+                qty=traded_quantity
+            )
 
 
             if buy_order.quantity == 0:
@@ -108,7 +112,7 @@ class Orderbook:
                 best_bid = self.get_best_bid_price()
                 if best_bid is None:
                     break
-                best_order = self.bid[best_bid][0]
+                best_order = self.bids[best_bid][0]
 
             traded_quantity = min(order.quantity , best_order.quantity)
 
