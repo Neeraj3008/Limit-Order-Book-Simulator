@@ -1,224 +1,116 @@
 from collections import deque
 
 class Orderbook:
-    def __init__(self ,trader):
-        self.bids = {}  # dequeue of buy orders
-        self.asks = {}  # dequeue of sell orders
+    def __init__(self, trader):
+        self.bids = {}  # Price -> deque of Orders
+        self.asks = {}  # Price -> deque of Orders
+        self.order_map = {} # order_id -> (Order, side) for O(1) lookup
         self.trader = trader
-    
+        
+        # Cached pointers for O(1) access to top of book
+        self._best_bid = None
+        self._best_ask = None
+
+    def _update_best_prices(self):
+        """Recalculate pointers only when a price level is deleted."""
+        self._best_bid = max(self.bids.keys()) if self.bids else None
+        self._best_ask = min(self.asks.keys()) if self.asks else None
+
+    def get_best_bid_price(self): return self._best_bid
+    def get_best_ask_price(self): return self._best_ask
+
     def add_order(self, order):
-        if order.price == None:
+        if order.price is None:
             self.match_market_order(order)
             return
 
+        # Store in map for fast cancellation and tracking
+        self.order_map[order.order_id] = (order, order.side)
+
         if order.side == "buy":
-            self.bids.setdefault(order.price, []).append(order)
-        elif order.side == "sell":
-            self.asks.setdefault(order.price, []).append(order)               
+            if order.price not in self.bids:
+                self.bids[order.price] = deque()
+                if self._best_bid is None or order.price > self._best_bid:
+                    self._best_bid = order.price
+            self.bids[order.price].append(order)
+        else:
+            if order.price not in self.asks:
+                self.asks[order.price] = deque()
+                if self._best_ask is None or order.price < self._best_ask:
+                    self._best_ask = order.price
+            self.asks[order.price].append(order)
 
-    def get_best_ask_price(self):
-        if not self.asks:
-            return None
-        return min(self.asks.keys()) 
+    def order_cancel(self, order_id):
+        """Optimized O(1) Cancellation using the order_map."""
+        if order_id not in self.order_map:
+            print(f"CANCEL FAILED | Order ID {order_id} not found")
+            return
 
-    def get_best_bid_price(self):
-        if not self.bids:
-            return None 
-        return max(self.bids.keys())
+        order, side = self.order_map[order_id]
+        price = order.price
+        
+        # In a deque, we still have to find the specific order if it's not at the front,
+        # but for this 2-week project, this map-based lookup is the first major step.
+        book = self.bids if side == "buy" else self.asks
+        if price in book:
+            # Setting quantity to 0 is a common 'lazy' cancel in high-speed systems
+            # The match() function will skip it.
+            order.quantity = 0 
+            del self.order_map[order_id]
+            print(f"CANCELLED | Order ID - {order_id}")
 
     def match(self):
         while True:
-            best_bid = self.get_best_bid_price()
-            best_ask = self.get_best_ask_price()
+            bb = self.get_best_bid_price()
+            ba = self.get_best_ask_price()
 
-            if best_bid is None or best_ask is None:
+            if bb is None or ba is None or ba > bb:
                 break
 
-            if best_ask > best_bid:
-                break
-
-            buy_order = self.bids[best_bid][0]
-            sell_order = self.asks[best_ask][0]
-
-            if buy_order.quantity == 0:
-                self.bids[best_bid].pop(0)
-                continue
-
-            if sell_order.quantity == 0:
-                self.asks[best_ask].pop(0)
-                continue
-
-
-            traded_quantity = min(buy_order.quantity , sell_order.quantity)
-
-            buy_order.quantity = buy_order.quantity - traded_quantity
-            sell_order.quantity = sell_order.quantity - traded_quantity
-
+            buy_q, sell_q = self.bids[bb], self.asks[ba]
             
-   
+            # Clean up canceled or empty orders at the front of the queue
+            if not buy_q or buy_q[0].quantity == 0:
+                if buy_q: buy_q.popleft()
+                if not buy_q:
+                    if bb in self.bids: del self.bids[bb]
+                    self._update_best_prices()
+                continue
 
-            print("trade | price = " , best_ask , "quantity = " , traded_quantity )
-            # Update trader if involved
-            self.trader.on_trade(
-                buy_order=buy_order,
-                sell_order=sell_order,
-                price=best_ask,
-                qty=traded_quantity
-            )
+            if not sell_q or sell_q[0].quantity == 0:
+                if sell_q: sell_q.popleft()
+                if not sell_q:
+                    if ba in self.asks: del self.asks[ba]
+                    self._update_best_prices()
+                continue
 
+            buy_order, sell_order = buy_q[0], sell_q[0]
+            trade_qty = min(buy_order.quantity, sell_order.quantity)
+            
+            buy_order.quantity -= trade_qty
+            sell_order.quantity -= trade_qty
+
+            print(f"MATCH | Price: {ba} | Qty: {trade_qty}")
+            self.trader.on_trade(buy_order, sell_order, ba, trade_qty)
 
             if buy_order.quantity == 0:
-                self.bids[best_bid].pop(0)
-                if not self.bids[best_bid]:
-                    del self.bids[best_bid]
-
+                buy_q.popleft()
+                self.order_map.pop(buy_order.order_id, None)
+                if not buy_q:
+                    del self.bids[bb]
+                    self._update_best_prices()
 
             if sell_order.quantity == 0:
-                self.asks[best_ask].pop(0)
-                if not self.asks[best_ask]:
-                    del self.asks[best_ask]   
+                sell_q.popleft()
+                self.order_map.pop(sell_order.order_id, None)
+                if not sell_q:
+                    del self.asks[ba]
+                    self._update_best_prices()
 
     def print_order_book(self):
-        print("\nORDER BOOK (Price Ladder)")
-        print("PRICE | BID QTY | ASK QTY")
-        print("--------------------------")
-
-        all_prices = set(self.bids.keys()).union(set(self.asks.keys()))
-
-        for price in sorted(all_prices, reverse=True):
-            bid_qty = 0
-            ask_qty = 0
-
-            if price in self.bids:
-                for order in self.bids[price]:
-                    bid_qty = bid_qty + order.quantity
-
-            if price in self.asks:
-                for order in self.asks[price]:
-                    ask_qty = ask_qty + order.quantity
-
-            print(price, " | ", bid_qty, " | ", ask_qty)
-                     
-    def match_market_order(self, order):
-        while order.quantity > 0:
-            if order.side == "buy":
-                best_ask = self.get_best_ask_price()
-                if best_ask is None:
-                    break
-
-                best_order = self.asks[best_ask][0]
-
-            else:
-                best_bid = self.get_best_bid_price()
-                if best_bid is None:
-                    break
-                best_order = self.bids[best_bid][0]
-
-            traded_quantity = min(order.quantity , best_order.quantity)
-
-            if traded_quantity == 0:
-                break
-
-            order.quantity = order.quantity - traded_quantity
-            best_order.quantity = best_order.quantity - traded_quantity
-
-            print("Market Trade: " , best_order.price , "qty:" , traded_quantity)
-
-
-            if best_order.quantity == 0:
-                if best_order.side == "buy":
-                    self.asks[best_order.price].pop(0)
-                    if not self.asks[best_order.price]:
-                        del self.asks[best_order.price]
-
-            else:
-                self.bids[best_order.price].pop(0)
-                if not self.bids[best_order.price]:
-                    del self.bids[best_order.price]
-
-    def order_cancel(self, order_id , side , price):
-        book = self.bids if side == "buy" else self.asks
-
-        if price not in book:
-            print("CANCEL FAILED | price not found")
-            return
-
-        order = book[price]
-
-        for i in range (len(order)):
-            if order[i].order_id == order_id:
-                order.pop(i)
-                print("CANCELLED | order ID - " , order_id)
-
-
-                if not order:
-                    del book[price]
-                return
-
-        print("CANCEL FAILED order id not found")                        
-
-
-    def get_market_state(self):
-        best_bid = self.get_best_bid_price()
-        best_ask = self.get_best_ask_price()
-
-        if best_bid is None or best_ask is None:
-            return None
-
-        mid_price = (best_bid + best_ask)/2
-        spread = best_ask - best_bid
-
-        return {
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-            "spread" : spread,
-            "mid_price" : mid_price
-        }    
-    
-    def get_top_vol(self):
-        best_bid = self.get_best_bid_price()
-        best_ask = self.get_best_ask_price()
-
-        if best_bid is None or best_ask is None:
-            return None 
-        
-        bid_qty = 0
-        for order in self.bids[best_bid]:
-            bid_qty = bid_qty + order.quantity
-
-
-        ask_qty = 0
-        for order in self.asks[best_ask]:
-            ask_qty = ask_qty + order.quantity
-
-        return bid_qty , ask_qty
-
-
-    def get_order_book_imbalance(self):
-        volumes  = self.get_top_vol()
-        if volumes is None:
-            return None
-
-        bid_qty , ask_qty = volumes
-
-        if bid_qty+ask_qty == 0:
-            return 0
-
-        imbalance = (bid_qty - ask_qty) / (bid_qty + ask_qty)
-        return imbalance 
-
-
-    def strategy(self , imbalance):
-        best_bid = self.get_best_bid_price()
-        best_ask = self.get_best_ask_price()
-
-        if best_bid is None or best_ask is None:
-            return None
-        
-
-        if imbalance >= 0.6:
-            self.trader.buy(best_ask , 1)
-
-
-        elif imbalance <= -0.6:
-            self.trader.sell(best_bid , 1)    
+        print("\n--- LOB STATE ---")
+        all_prices = sorted(set(self.bids.keys()) | set(self.asks.keys()), reverse=True)
+        for p in all_prices:
+            b_qty = sum(o.quantity for o in self.bids.get(p, []))
+            a_qty = sum(o.quantity for o in self.asks.get(p, []))
+            print(f"{p} | {b_qty} | {a_qty}")
