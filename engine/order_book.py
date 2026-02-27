@@ -1,4 +1,5 @@
 from collections import deque
+from engine.order import Order
 
 class Orderbook:
     def __init__(self, trader):

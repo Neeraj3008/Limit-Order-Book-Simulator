@@ -1,4 +1,4 @@
-from order import Order
+from engine.order import Order
 import time
 
 class Trader:
@@ -61,6 +61,6 @@ class Trader:
             self.position = self.position - qty
             self.cash = self.cash + price * qty              
 
-
+    
 
     
