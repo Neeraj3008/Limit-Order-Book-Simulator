@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import time
+from database import Sessionlocal, Traderecord
 
 
 
@@ -69,5 +70,12 @@ async def cancel_order(order_id: int):
     
     book.order_cancel(order_id)
     return {"status": "cancelled", "order_id": order_id}
+
+@app.get("/history") 
+async def get_history():
+    db = Sessionlocal()
+    trades = db.query(Traderecord).all()
+    db.close()
+    return trades
 
 

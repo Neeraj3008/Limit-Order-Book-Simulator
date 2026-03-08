@@ -1,5 +1,8 @@
 from collections import deque
 from engine.order import Order
+from database import Sessionlocal , Traderecord
+
+
 
 class Orderbook:
     def __init__(self, trader):
@@ -61,52 +64,67 @@ class Orderbook:
             print(f"CANCELLED | Order ID - {order_id}")
 
     def match(self):
-        while True:
-            bb = self.get_best_bid_price()
-            ba = self.get_best_ask_price()
+        # Open DB connection once per match cycle (Performance Boost)
+        db = Sessionlocal() 
+        try:
+            while True:
+                bb = self.get_best_bid_price()
+                ba = self.get_best_ask_price()
 
-            if bb is None or ba is None or ba > bb:
-                break
+                if bb is None or ba is None or ba < bb: # Crossed book check
+                    # We match as long as Bid >= Ask
+                    if bb is not None and ba is not None and bb >= ba:
+                        pass # Continue to matching logic
+                    else:
+                        break
 
-            buy_q, sell_q = self.bids[bb], self.asks[ba]
+                buy_q, sell_q = self.bids[bb], self.asks[ba]
+                
+                # ... [Canceled order cleanup remains same] ...
+
+                buy_order, sell_order = buy_q[0], sell_q[0]
+                trade_qty = min(buy_order.quantity, sell_order.quantity)
+                
+                # Update quantities
+                buy_order.quantity -= trade_qty
+                sell_order.quantity -= trade_qty
+
+                # Execution Price Logic: Usually the price of the order already on the book
+                # If the buy was there first, price = bb. If sell was there first, price = ba.
+                exec_price = bb if buy_order.timestamp < sell_order.timestamp else ba
+
+                print(f"MATCH | Price: {exec_price} | Qty: {trade_qty}")
+                self.trader.on_trade(buy_order, sell_order, exec_price, trade_qty)
+
+                # Database Log
+                new_trade = Traderecord(
+                    price=exec_price, 
+                    quantity=trade_qty, 
+                    side="buy" if buy_order.timestamp > sell_order.timestamp else "sell"
+                )
+                db.add(new_trade)
+
+                # Cleanup Logic
+                if buy_order.quantity == 0:
+                    buy_q.popleft()
+                    self.order_map.pop(buy_order.order_id, None)
+                    if not buy_q:
+                        del self.bids[bb]
+                        self._update_best_prices()
+
+                if sell_order.quantity == 0:
+                    sell_q.popleft()
+                    self.order_map.pop(sell_order.order_id, None)
+                    if not sell_q:
+                        del self.asks[ba]
+                        self._update_best_prices()
             
-            # Clean up canceled or empty orders at the front of the queue
-            if not buy_q or buy_q[0].quantity == 0:
-                if buy_q: buy_q.popleft()
-                if not buy_q:
-                    if bb in self.bids: del self.bids[bb]
-                    self._update_best_prices()
-                continue
-
-            if not sell_q or sell_q[0].quantity == 0:
-                if sell_q: sell_q.popleft()
-                if not sell_q:
-                    if ba in self.asks: del self.asks[ba]
-                    self._update_best_prices()
-                continue
-
-            buy_order, sell_order = buy_q[0], sell_q[0]
-            trade_qty = min(buy_order.quantity, sell_order.quantity)
-            
-            buy_order.quantity -= trade_qty
-            sell_order.quantity -= trade_qty
-
-            print(f"MATCH | Price: {ba} | Qty: {trade_qty}")
-            self.trader.on_trade(buy_order, sell_order, ba, trade_qty)
-
-            if buy_order.quantity == 0:
-                buy_q.popleft()
-                self.order_map.pop(buy_order.order_id, None)
-                if not buy_q:
-                    del self.bids[bb]
-                    self._update_best_prices()
-
-            if sell_order.quantity == 0:
-                sell_q.popleft()
-                self.order_map.pop(sell_order.order_id, None)
-                if not sell_q:
-                    del self.asks[ba]
-                    self._update_best_prices()
+            db.commit() # Save all trades from this match cycle at once
+        except Exception as e:
+            print(f"Match Error: {e}")
+            db.rollback()
+        finally:
+            db.close()
 
     def print_order_book(self):
         print("\n--- LOB STATE ---")
