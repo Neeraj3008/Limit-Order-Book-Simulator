@@ -4,14 +4,29 @@ from typing import Optional
 import time
 from database import Sessionlocal, Traderecord
 
+from engine.connection_manager import manager
+from fastapi import WebSocket , WebSocketDisconnect
 
+      
+    
 
 
 from engine.order import Order
 from engine.order_book import Orderbook
 from engine.trader import Trader
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="My Quantum Exchange")
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 initial_cash = 100000
 trader = Trader(initial_cash)
@@ -25,6 +40,10 @@ class OrderRequest(BaseModel):
 
 @app.post("/order/limit")
 async def place_limit_order(req: OrderRequest):
+
+
+    if book.halted:
+        return {"status":"rejected" , "reason": "market trade halted as high toxicity"}
     """Submits a limit order and runs the matching engine."""
     # Generate a unique ID (In Day 3 we will move this to a DB)
     order_id = int(time.time() * 1000) 
@@ -38,7 +57,7 @@ async def place_limit_order(req: OrderRequest):
     )
     
     book.add_order(new_order)
-    book.match() # Run matching immediately
+    await book.match() # Run matching immediately
     
     return {"status": "success", "order_id": order_id}
 
@@ -79,3 +98,17 @@ async def get_history():
     return trades
 
 
+# main.py
+
+@app.websocket("/ws/market-data")
+async def market_data_feed(websocket: WebSocket):
+    await websocket.accept()  # This is the ONLY one we need
+    await manager.connect(websocket)
+    print("DEBUG: Connection fully established!")
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+        

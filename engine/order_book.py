@@ -1,6 +1,10 @@
 from collections import deque
 from engine.order import Order
 from database import Sessionlocal , Traderecord
+from engine.connection_manager import manager
+import asyncio
+from datetime import datetime
+from engine.analytics import analytics
 
 
 
@@ -10,6 +14,8 @@ class Orderbook:
         self.asks = {}  # Price -> deque of Orders
         self.order_map = {} # order_id -> (Order, side) for O(1) lookup
         self.trader = trader
+        self.halted = False
+        self.VPIN_threshold = 0.75
         
         # Cached pointers for O(1) access to top of book
         self._best_bid = None
@@ -63,48 +69,53 @@ class Orderbook:
             del self.order_map[order_id]
             print(f"CANCELLED | Order ID - {order_id}")
 
-    def match(self):
-        # Open DB connection once per match cycle (Performance Boost)
-        db = Sessionlocal() 
+    async def match(self):
+        print("BEDUG")
+        db = Sessionlocal()
         try:
             while True:
                 bb = self.get_best_bid_price()
                 ba = self.get_best_ask_price()
 
-                if bb is None or ba is None or ba < bb: # Crossed book check
-                    # We match as long as Bid >= Ask
-                    if bb is not None and ba is not None and bb >= ba:
-                        pass # Continue to matching logic
-                    else:
-                        break
+                if bb is None or ba is None or bb < ba:
+                    break
 
-                buy_q, sell_q = self.bids[bb], self.asks[ba]
-                
-                # ... [Canceled order cleanup remains same] ...
+                buy_q  , sell_q = self.bids[bb] , self.asks[ba]
 
-                buy_order, sell_order = buy_q[0], sell_q[0]
-                trade_qty = min(buy_order.quantity, sell_order.quantity)
-                
-                # Update quantities
+                buy_order , sell_order = buy_q[0] , sell_q[0]
+                trade_qty = min(buy_order.quantity , sell_order.quantity)
+
+
+                exec_price = bb if buy_order.timestamp < sell_order.timestamp else ba
+                side = "buy" if buy_order.timestamp > sell_order.timestamp else "sell"
+
+                print(f"MATCH | Price: {exec_price} | Qty: {trade_qty}")
+
                 buy_order.quantity -= trade_qty
                 sell_order.quantity -= trade_qty
 
-                # Execution Price Logic: Usually the price of the order already on the book
-                # If the buy was there first, price = bb. If sell was there first, price = ba.
-                exec_price = bb if buy_order.timestamp < sell_order.timestamp else ba
 
-                print(f"MATCH | Price: {exec_price} | Qty: {trade_qty}")
-                self.trader.on_trade(buy_order, sell_order, exec_price, trade_qty)
-
-                # Database Log
                 new_trade = Traderecord(
-                    price=exec_price, 
-                    quantity=trade_qty, 
-                    side="buy" if buy_order.timestamp > sell_order.timestamp else "sell"
+                price=exec_price, 
+                quantity=trade_qty, 
+                side=side
                 )
                 db.add(new_trade)
+                
+                vpin_score = analytics.update(side, trade_qty)
+                if vpin_score is not None and vpin_score > self.VPIN_threshold:
+                        print(f"!!! ALERT: VPIN {vpin_score} EXCEEDS THRESHOLD. HALTING MARKET !!!")
+                        self.halted = True
 
-                # Cleanup Logic
+                await manager.broadcast({
+                    "event": "TRADE",
+                    "price": float(exec_price),
+                    "quantity": float(trade_qty),
+                    "side": side,
+                    "vpin": vpin_score if vpin_score is not None else "Calculating...",
+                    "timestamp": str(datetime.now())
+                })
+
                 if buy_order.quantity == 0:
                     buy_q.popleft()
                     self.order_map.pop(buy_order.order_id, None)
@@ -118,13 +129,20 @@ class Orderbook:
                     if not sell_q:
                         del self.asks[ba]
                         self._update_best_prices()
-            
-            db.commit() # Save all trades from this match cycle at once
+
+            db.commit()
+
         except Exception as e:
             print(f"Match Error: {e}")
             db.rollback()
         finally:
-            db.close()
+            db.close()                        
+
+
+    
+    
+        
+    
 
     def print_order_book(self):
         print("\n--- LOB STATE ---")
@@ -133,3 +151,6 @@ class Orderbook:
             b_qty = sum(o.quantity for o in self.bids.get(p, []))
             a_qty = sum(o.quantity for o in self.asks.get(p, []))
             print(f"{p} | {b_qty} | {a_qty}")
+
+
+           
