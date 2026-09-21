@@ -1,3 +1,5 @@
 exchange.db
 __pycache__/
 *.pyc
+.env
+frontend/.env

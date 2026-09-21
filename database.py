@@ -1,11 +1,17 @@
+import os
 import sqlalchemy
 from sqlalchemy import Column, Integer, Float, String, DateTime
 from sqlalchemy.sql import func
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # 1. Connection Setup
-DATABASE_URL = "sqlite:///./exchange.db"
-engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./exchange.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = sqlalchemy.create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 Sessionlocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # 2. Schema Setup
