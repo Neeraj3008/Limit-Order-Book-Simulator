@@ -1,6 +1,29 @@
 # Limit Order Book
 
-A FastAPI matching engine with a React/Vite market terminal.
+This project is a trading-system simulation based on a limit order book, which is the core data structure used by modern financial exchanges. A limit order book keeps track of all pending buy and sell orders by price level and matches them when a valid trade can occur. It is the foundation behind order execution, price discovery, liquidity, and market microstructure.
+
+This repository combines a Python backend with a React frontend to model how orders flow through a matching engine, how prices are formed, and how trade data can be analyzed in a market-like environment.
+
+## What this project includes
+
+- Matching engine for buy and sell orders
+- Order book state management for bids and asks
+- Trade execution and analytics
+- Replay and simulation capabilities using market data
+- Simple strategy and trader logic
+- A lightweight frontend market terminal
+
+## Project structure
+
+- `engine/` — matching logic, order book, strategies, replay engine
+- `main.py` — FastAPI application entry point
+- `state.py` and `database.py` — backend state and persistence
+- `frontend/` — React + Vite user interface
+- `datasets/` — sample LOBSTER-style market data
+
+## Why it matters
+
+A limit order book matters because it determines which orders get executed first and at what price. The system prioritizes orders by price and then by time, which makes it a realistic model of how exchanges operate. By studying this structure, you can better understand real-world market behavior, liquidity, spread dynamics, and execution logic.
 
 ## Local development
 
